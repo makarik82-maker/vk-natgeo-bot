@@ -1,14 +1,12 @@
 import json
 import os
-import re
-import ssl
+import uuid
 import requests
 import urllib3
 
-# Отключаем предупреждения о самоподписанных сертификатах GigaChat
-VERIFY_SSL = False
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-OWNER_ID = "-233780972"            # natgeostream
+OWNER_ID = "-233780972"
 COMMON = {"v": "5.285", "client_id": "52461373", "lang": "0", "https": "1"}
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -38,33 +36,44 @@ def api_call(s, method, token, **params):
     return body.get("response")
 
 def get_gigachat_description(playlist_title):
-    """Генерирует описание через GigaChat API"""
     credentials = os.environ.get("GIGACHAT_CREDENTIALS")
     if not credentials:
-        print("[gigachat] credentials not found, using fallback")
+        print("[gigachat] credentials not found")
         return None
     
+    # Проверяем формат credentials
+    if not credentials.startswith("Basic "):
+        print(f"[gigachat] WARNING: credentials should start with 'Basic ', got: {credentials[:20]}...")
+    
     try:
-        # 1. Получаем access token
+        # 1. Получаем access token с УНИКАЛЬНЫМ RqUID
+        rq_uid = str(uuid.uuid4())
         token_url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
         token_headers = {
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json",
-            "RqUID": "00000000-0000-0000-0000-000000000001",
+            "RqUID": rq_uid,
             "Authorization": credentials
         }
         token_data = {"scope": "GIGACHAT_API_PERS"}
         
-        print("[gigachat] requesting token...")
+        print(f"[gigachat] requesting token (RqUID: {rq_uid})...")
         token_resp = requests.post(
             token_url,
             headers=token_headers,
             data=token_data,
-            verify=False,  # GigaChat использует самоподписанные сертификаты
+            verify=False,
             timeout=30
         )
-        token_resp.raise_for_status()
-        access_token = token_resp.json().get("access_token")
+        
+        if token_resp.status_code != 200:
+            print(f"[gigachat] token request failed: {token_resp.status_code}")
+            print(f"[gigachat] response: {token_resp.text}")
+            return None
+        
+        token_json = token_resp.json()
+        print(f"[gigachat] token response: {token_json}")
+        access_token = token_json.get("access_token")
         
         if not access_token:
             print("[gigachat] no access token in response")
@@ -101,19 +110,26 @@ def get_gigachat_description(playlist_title):
             verify=False,
             timeout=30
         )
-        chat_resp.raise_for_status()
         
-        choices = chat_resp.json().get("choices", [])
+        if chat_resp.status_code != 200:
+            print(f"[gigachat] chat request failed: {chat_resp.status_code}")
+            print(f"[gigachat] response: {chat_resp.text}")
+            return None
+        
+        chat_json = chat_resp.json()
+        print(f"[gigachat] chat response: {chat_json}")
+        
+        choices = chat_json.get("choices", [])
         if choices:
             description = choices[0].get("message", {}).get("content", "").strip()
-            print(f"[gigachat] generated: {description[:100]}...")
+            print(f"[gigachat] SUCCESS: {description[:100]}...")
             return description
         
         print("[gigachat] no choices in response")
         return None
         
     except Exception as e:
-        print(f"[gigachat] error: {e}")
+        print(f"[gigachat] exception: {type(e).__name__}: {e}")
         return None
 
 def load_state():
@@ -147,7 +163,6 @@ def main():
     token = get_token(s)
     print("token OK")
 
-    # 1. Все плейлисты
     albums_resp = api_call(s, "video.getAlbums", token,
                            owner_id=OWNER_ID, count="100")
     albums = albums_resp.get("items", []) if isinstance(albums_resp, dict) else []
@@ -159,18 +174,15 @@ def main():
     state = load_state()
     p_idx = state.get("playlist_index", 0) % len(albums)
 
-    # 2. Текущий плейлист
     album = albums[p_idx]
     album_id = album["id"]
     album_title = album.get("title", "Без названия").strip()
     print(f"current: #{p_idx} '{album_title}'")
 
-    # 3. Генерируем описание через GigaChat (или fallback)
     desc = get_gigachat_description(album_title)
     if not desc:
         desc = "Документальный сериал National Geographic."
 
-    # 4. Формируем и отправляем пост
     playlist_url = f"https://vkvideo.ru/playlist/{OWNER_ID}_{album_id}"
     post = (
         f"🎬 <b>{album_title}</b>\n\n"
@@ -182,7 +194,6 @@ def main():
     print("------------\n")
     send_telegram(post)
 
-    # 5. Переход к следующему плейлисту (цикл)
     p_idx = (p_idx + 1) % len(albums)
     save_state({"playlist_index": p_idx})
     print(f"state saved: next playlist={p_idx}")
