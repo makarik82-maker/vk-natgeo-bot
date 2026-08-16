@@ -1,119 +1,52 @@
-import re
-import asyncio
+import requests
 
-CHANNEL_URL = "https://vkvideo.ru/@natgeostream/playlists"
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 
-HEADERS = {
-    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                   "AppleWebKit/537.36 (KHTML, like Gecko) "
-                   "Chrome/126.0.0.0 Safari/537.36"),
-    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-}
+BASE = "https://api.vkvideo.ru/method/"
+COMMON = {"v": "5.285", "client_id": "52461373", "lang": "0", "https": "1"}
 
-async def run():
-    from playwright.async_api import async_playwright
+OWNER = "-233780972"  # владелец, взят из URL плейлистов
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled"],
-        )
-        context = await browser.new_context(
-            user_agent=HEADERS["User-Agent"], locale="ru-RU")
-        page = await context.new_page()
+def main():
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": UA,
+        "Accept-Language": "ru-RU,ru;q=0.9",
+        "Origin": "https://vkvideo.ru",
+        "Referer": "https://vkvideo.ru/",
+    })
 
-        xhr = []
-        page.on("response", lambda r: xhr.append(r.url)
-                if r.request.resource_type in ("xhr", "fetch") else None)
+    r = s.get("https://login.vk.ru/?act=get_anonym_token", timeout=30)
+    print("[anonym] status:", r.status_code)
+    print(r.text[:500])
+    token = ""
+    try:
+        data = r.json()
+        token = data.get("response", {}).get("token", "") or data.get("token", "")
+    except Exception as e:
+        print("parse error:", e)
+    if not token:
+        token = r.text.strip()
+    print("token:", token[:60])
 
-        print("[browser] открываю страницу плейлистов...")
-        await page.goto(CHANNEL_URL, wait_until="domcontentloaded", timeout=60000)
-        await page.wait_for_timeout(3000)
+    def call(method, **params):
+        p = dict(COMMON)
+        p["access_token"] = token
+        p.update(params)
+        try:
+            rr = s.get(BASE + method, params=p, timeout=30)
+            print(f"\n=== {method} === status {rr.status_code}")
+            print(rr.text[:1500])
+        except Exception as e:
+            print(f"[{method}] error:", e)
 
-        # Скроллим, пока количество ссылок растёт
-        prev, stable = -1, 0
-        for i in range(40):
-            for sel in ("text=Показать ещё", "text=Показать еще"):
-                try:
-                    btn = page.locator(sel).first
-                    if await btn.count() and await btn.is_visible():
-                        await btn.click()
-                        await page.wait_for_timeout(1500)
-                except Exception:
-                    pass
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await page.wait_for_timeout(1200)
-            cur = await page.eval_on_selector_all(
-                'a[href*="/playlist/"]', "els => els.length")
-            if cur == prev:
-                stable += 1
-                if stable >= 4:
-                    break
-            else:
-                stable = 0
-            prev = cur
-        print(f"[browser] итераций скролла: {i+1}, ссылок: {prev}")
-
-        data = await page.eval_on_selector_all(
-            'a[href*="/playlist/"]',
-            'els => els.map(e => ({href: e.getAttribute("href"), text: e.innerText.trim()}))')
-
-        print("[browser] XHR/fetch запросы:")
-        for u in sorted(set(xhr))[:60]:
-            print("   ", u)
-
-        # Склеиваем дубли: лучшее название = самое длинное, не "N видео"
-        best, order = {}, []
-        for item in data:
-            href = (item["href"] or "").split("?")[0]
-            if "/playlist/" not in href:
-                continue
-            if href not in best:
-                best[href] = ""
-                order.append(href)
-            t = re.sub(r"\s+", " ", item["text"]).strip()
-            if t and not re.fullmatch(r"\d+ видео", t) and len(t) > len(best[href]):
-                best[href] = t
-
-        print(f"\n=== ПЛЕЙЛИСТОВ: {len(order)} ===")
-        for n, href in enumerate(order, 1):
-            print(f"{n}. {best[href] or '—'} | {href}")
-
-        # ПРОБА: открываем первый плейлист
-        probe = "https://vkvideo.ru" + order[0]
-        print(f"\n[probe] открываю {probe}")
-        await page.goto(probe, wait_until="domcontentloaded", timeout=60000)
-        await page.wait_for_timeout(3000)
-        for _ in range(3):
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await page.wait_for_timeout(1000)
-
-        vids = await page.eval_on_selector_all(
-            'a[href*="/video"]',
-            'els => els.map(e => ({href: e.getAttribute("href"), text: e.innerText.trim()}))')
-        seen, vlist = set(), []
-        for v in vids:
-            h = (v["href"] or "").split("?")[0]
-            if h not in seen and "/video" in h:
-                seen.add(h)
-                vlist.append((h, re.sub(r"\s+", " ", v["text"])))
-        print(f"[probe] уникальных видео-ссылок: {len(vlist)}")
-        for h, t in vlist[:8]:
-            print(f"   {h} | {t[:70]}")
-
-        print("[probe] ищу описание плейлиста:")
-        for sel in ('[class*="desc"]', '[class*="Desc"]', '[class*="about"]',
-                    '[class*="info"]', '[class*="description"]'):
-            try:
-                els = await page.query_selector_all(sel)
-            except Exception:
-                continue
-            for e in els[:3]:
-                t = (await e.inner_text()).strip()
-                if len(t) > 40:
-                    print(f"   [{sel}] {t[:300]}")
-
-        await browser.close()
+    call("utils.resolveScreenName", screen_name="natgeostream")
+    call("video.getPlaylists", owner_id=OWNER, count="100", offset="0")
+    call("video.getAlbums", owner_id=OWNER, count="100", offset="0")
+    call("playlists.get", owner_id=OWNER, count="100")
+    call("video.get", owner_id=OWNER, album_id="136", count="20")
+    call("playlists.getVideos", playlist_id=f"{OWNER}_136", count="20")
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    main()
