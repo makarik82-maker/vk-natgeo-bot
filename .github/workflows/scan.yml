@@ -1,7 +1,7 @@
 name: Scan VK Video
 
 on:
-  workflow_dispatch: # ручная кнопка для тестов
+  workflow_dispatch:
 
 jobs:
   scan:
@@ -12,6 +12,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install deps
-        run: pip install requests
+        run: |
+          pip install requests playwright
+          sudo playwright install-deps chromium || true
+          playwright install chromium
       - name: Run scanner
         run: python vk_scanner.py
