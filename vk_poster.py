@@ -6,7 +6,7 @@ import requests
 import urllib3
 
 # Отключаем предупреждения о самоподписанных сертификатах GigaChat
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+VERIFY_SSL = False
 
 OWNER_ID = "-233780972"            # natgeostream
 COMMON = {"v": "5.285", "client_id": "52461373", "lang": "0", "https": "1"}
