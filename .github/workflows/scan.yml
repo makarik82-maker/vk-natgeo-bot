@@ -26,6 +26,7 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          GIGACHAT_CREDENTIALS: ${{ secrets.GIGACHAT_CREDENTIALS }}
         run: python vk_poster.py
       - name: Commit state
         run: |
