@@ -1,7 +1,12 @@
 import json
 import os
 import re
+import ssl
 import requests
+import urllib3
+
+# Отключаем предупреждения о самоподписанных сертификатах GigaChat
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 OWNER_ID = "-233780972"            # natgeostream
 COMMON = {"v": "5.285", "client_id": "52461373", "lang": "0", "https": "1"}
@@ -32,23 +37,84 @@ def api_call(s, method, token, **params):
         raise RuntimeError(f"API {method}: {body['error']}")
     return body.get("response")
 
-def get_playlist_description(s, owner_id, album_id):
-    url = f"https://vkvideo.ru/playlist/{owner_id}_{album_id}"
+def get_gigachat_description(playlist_title):
+    """Генерирует описание через GigaChat API"""
+    credentials = os.environ.get("GIGACHAT_CREDENTIALS")
+    if not credentials:
+        print("[gigachat] credentials not found, using fallback")
+        return None
+    
     try:
-        r = s.get(url, headers=HEADERS, timeout=30)
-        r.raise_for_status()
-        m = re.search(r'<meta[^>]+property="og:description"[^>]+content="([^"]*)"',
-                      r.text)
-        if not m:
-            m = re.search(r'<meta[^>]+content="([^"]*)"[^>]+property="og:description"',
-                          r.text)
-        if m:
-            desc = m.group(1).strip()
-            sentences = re.split(r'(?<=[.!?])\s+', desc)
-            return " ".join(sentences[:3]).strip()
+        # 1. Получаем access token
+        token_url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+        token_headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+            "RqUID": "00000000-0000-0000-0000-000000000001",
+            "Authorization": credentials
+        }
+        token_data = {"scope": "GIGACHAT_API_PERS"}
+        
+        print("[gigachat] requesting token...")
+        token_resp = requests.post(
+            token_url,
+            headers=token_headers,
+            data=token_data,
+            verify=False,  # GigaChat использует самоподписанные сертификаты
+            timeout=30
+        )
+        token_resp.raise_for_status()
+        access_token = token_resp.json().get("access_token")
+        
+        if not access_token:
+            print("[gigachat] no access token in response")
+            return None
+        
+        # 2. Генерируем описание
+        chat_url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
+        chat_headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {access_token}"
+        }
+        
+        prompt = (
+            f"Напиши краткое описание (2-3 предложения) для документального сериала "
+            f"'{playlist_title}' от National Geographic. "
+            f"Описание должно быть увлекательным и информативным."
+        )
+        
+        chat_payload = {
+            "model": "GigaChat",
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.7,
+            "max_tokens": 200
+        }
+        
+        print("[gigachat] generating description...")
+        chat_resp = requests.post(
+            chat_url,
+            headers=chat_headers,
+            json=chat_payload,
+            verify=False,
+            timeout=30
+        )
+        chat_resp.raise_for_status()
+        
+        choices = chat_resp.json().get("choices", [])
+        if choices:
+            description = choices[0].get("message", {}).get("content", "").strip()
+            print(f"[gigachat] generated: {description[:100]}...")
+            return description
+        
+        print("[gigachat] no choices in response")
+        return None
+        
     except Exception as e:
-        print(f"[warn] desc fetch failed for {url}: {e}")
-    return ""
+        print(f"[gigachat] error: {e}")
+        return None
 
 def load_state():
     if not os.path.exists(STATE_FILE):
@@ -99,8 +165,8 @@ def main():
     album_title = album.get("title", "Без названия").strip()
     print(f"current: #{p_idx} '{album_title}'")
 
-    # 3. Описание с веб-страницы
-    desc = get_playlist_description(s, OWNER_ID, album_id)
+    # 3. Генерируем описание через GigaChat (или fallback)
+    desc = get_gigachat_description(album_title)
     if not desc:
         desc = "Документальный сериал National Geographic."
 
