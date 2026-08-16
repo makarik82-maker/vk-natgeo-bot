@@ -1,8 +1,8 @@
 import re
+import asyncio
 import requests
 
 CHANNEL_URL = "https://vkvideo.ru/@natgeostream/playlists"
-MOBILE_URL = "https://m.vkvideo.ru/@natgeostream/playlists"
 
 HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -11,55 +11,91 @@ HEADERS = {
     "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
 }
 
-PLAYLIST_RE = re.compile(r"/playlist/(-?\d+_\d+)")
-
-def fetch(url):
-    print(f"[GET] {url}")
-    r = requests.get(url, headers=HEADERS, timeout=30)
-    print(f"    status={r.status_code}, size={len(r.text)} bytes")
-    return r.text
-
-def extract_playlist_ids(html):
+def light_parse():
+    r = requests.get(CHANNEL_URL, headers=HEADERS, timeout=30)
+    print(f"[light] status={r.status_code} size={len(r.text)}")
     ids = []
-    for m in PLAYLIST_RE.finditer(html):
+    for m in re.finditer(r"/playlist/(-?\d+_\d+)", r.text):
         if m.group(1) not in ids:
             ids.append(m.group(1))
     return ids
 
+async def browser_parse():
+    from playwright.async_api import async_playwright
+    results = []
+    api_hits = set()
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        context = await browser.new_context(
+            user_agent=HEADERS["User-Agent"],
+            locale="ru-RU",
+        )
+        page = await context.new_page()
+
+        def on_response(res):
+            if "playlist" in res.url and "natgeostream" not in res.url:
+                api_hits.add(res.url)
+        page.on("response", on_response)
+
+        print("[browser] открываю страницу...")
+        await page.goto(CHANNEL_URL, wait_until="domcontentloaded", timeout=60000)
+        for _ in range(5):  # прокрутка, чтобы подгрузились все карточки
+            await page.mouse.wheel(0, 3000)
+            await page.wait_for_timeout(700)
+        await page.wait_for_timeout(2000)
+
+        links = await page.query_selector_all('a[href*="/playlist/"]')
+        print(f"[browser] ссылок на плейлисты в DOM: {len(links)}")
+        seen = set()
+        for a in links:
+            href = await a.get_attribute("href") or ""
+            if "/playlist/" not in href or href in seen:
+                continue
+            seen.add(href)
+            text = (await a.inner_text()).strip().replace("\n", " ")
+            results.append({"href": href, "title": text})
+        await browser.close()
+
+    print("[browser] перехваченные XHR со словом playlist:")
+    for u in sorted(api_hits):
+        print("   ", u)
+    return results
+
 def get_meta(html, prop):
-    m = re.search(r'<meta[^>]+(?:property|name)="%s"[^>]+content="([^"]*)"' % prop, html)
+    m = re.search(r'<meta[^>]+property="%s"[^>]+content="([^"]*)"' % prop, html)
     if not m:
-        m = re.search(r'<meta[^>]+content="([^"]*)"[^>]+(?:property|name)="%s"' % prop, html)
+        m = re.search(r'<meta[^>]+content="([^"]*)"[^>]+property="%s"' % prop, html)
     return m.group(1) if m else ""
 
 def main():
-    html = None
-    for url in (CHANNEL_URL, MOBILE_URL):
+    ids = light_parse()
+    if ids:
+        print("[light] нашлись плейлисты в HTML:", ids)
+        items = [{"href": f"/playlist/{i}", "title": ""} for i in ids]
+    else:
+        print("[light] в HTML пусто — запускаю браузер")
+        items = asyncio.run(browser_parse())
+
+    print(f"\n=== НАЙДЕНО ПЛЕЙЛИСТОВ: {len(items)} ===")
+    for n, it in enumerate(items, 1):
+        url = it["href"]
+        if url.startswith("/"):
+            url = "https://vkvideo.ru" + url
+        title = it.get("title", "")
+        desc = ""
         try:
-            html = fetch(url)
-            if len(html) > 1000:
-                break
+            r = requests.get(url, headers=HEADERS, timeout=30)
+            title = title or get_meta(r.text, "og:title")
+            desc = get_meta(r.text, "og:description") or get_meta(r.text, "description")
         except Exception as e:
-            print("    error:", e)
-
-    if not html:
-        print("FAIL: не удалось загрузить страницу канала")
-        return
-
-    ids = extract_playlist_ids(html)
-    print(f"\nНайдено уникальных плейлистов: {len(ids)}")
-
-    for pid in ids:
-        purl = f"https://vkvideo.ru/playlist/{pid}"
-        try:
-            phtml = fetch(purl)
-            title = get_meta(phtml, "og:title")
-            desc = get_meta(phtml, "og:description") or get_meta(phtml, "description")
-            print(f"\n=== PLAYLIST {pid} ===")
-            print("TITLE:", title)
-            print("DESC :", desc[:300])
-        except Exception as e:
-            print("    error:", e)
+            print("meta error:", e)
+        print(f"{n}. {title}")
+        print(f"   URL: {url}")
+        print(f"   DESC: {desc[:200]}")
 
 if __name__ == "__main__":
     main()
