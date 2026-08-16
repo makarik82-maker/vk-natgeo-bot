@@ -188,7 +188,7 @@ def main():
     post = (
         f"🎬 <b>{album_title}</b>\n\n"
         f"{desc}\n\n"
-        f'🔗 <a href="{playlist_url}">Плейлист</a>'
+        f'🔗 <a href="{playlist_url}">Ссылка на плейлист. Хорошего просмотра.</a>'
     )
     print("\n--- POST ---")
     print(post)
