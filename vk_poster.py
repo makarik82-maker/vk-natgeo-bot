@@ -41,9 +41,10 @@ def get_gigachat_description(playlist_title):
         print("[gigachat] credentials not found")
         return None
     
-    # Проверяем формат credentials
+    # Автоматически добавляем 'Basic ' если его нет
     if not credentials.startswith("Basic "):
-        print(f"[gigachat] WARNING: credentials should start with 'Basic ', got: {credentials[:20]}...")
+        credentials = f"Basic {credentials}"
+        print("[gigachat] added 'Basic ' prefix to credentials")
     
     try:
         # 1. Получаем access token с УНИКАЛЬНЫМ RqUID
