@@ -186,9 +186,10 @@ def main():
 
     playlist_url = f"https://vkvideo.ru/playlist/{OWNER_ID}_{album_id}"
     post = (
+        f"📺 <b>Смотрите на VK видео</b>\n\n"
         f"🎬 <b>{album_title}</b>\n\n"
         f"{desc}\n\n"
-        f'🔗 <a href="{playlist_url}">Ссылка на плейлист. Хорошего просмотра.</a>'
+        f'🔗 <a href="{playlist_url}">Плейлист</a>'
     )
     print("\n--- POST ---")
     print(post)
