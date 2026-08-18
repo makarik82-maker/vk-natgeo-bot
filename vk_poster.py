@@ -15,6 +15,12 @@ HEADERS = {"User-Agent": UA, "Accept-Language": "ru-RU,ru;q=0.9",
            "Origin": "https://vkvideo.ru", "Referer": "https://vkvideo.ru/"}
 STATE_FILE = "state.json"
 
+def escape_html(text):
+    """Экранирует спецсимволы для Telegram HTML"""
+    return (text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;"))
+
 def get_token(s):
     r = s.get("https://login.vk.ru/?act=get_anonym_token",
               params={"client_id": "52461373"}, timeout=30)
@@ -185,11 +191,11 @@ def main():
         desc = "Документальный сериал National Geographic."
 
     playlist_url = f"https://vkvideo.ru/playlist/{OWNER_ID}_{album_id}"
+    safe_title = escape_html(album_title)
     post = (
-        f"📺 <b>Смотрите на VK видео</b>\n\n"
-        f"🎬 <b>{album_title}</b>\n\n"
-        f"{desc}\n\n"
-        f'🔗 <a href="{playlist_url}">Плейлист</a>'
+        f"📺 <b>Сегодня в эфире</b>\n\n"
+        f'🎬 <a href="{playlist_url}"><b>{safe_title}</b></a>\n\n'
+        f"{desc}"
     )
     print("\n--- POST ---")
     print(post)
