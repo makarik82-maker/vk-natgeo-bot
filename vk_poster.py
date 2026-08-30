@@ -1,9 +1,11 @@
 import json
 import os
 import re
-import uuid
 import requests
 import urllib3
+
+from gigachat import GigaChat
+from gigachat.models import Chat, Messages, MessagesRole
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -47,14 +49,14 @@ def clean_description(text):
     if not text:
         return text
     
-    # Убираем Markdown-форматирование: **жирный**, *курсив*, _подчёркнутый_, `код`
+    # Убираем Markdown-форматирование
     text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
     text = re.sub(r'\*([^*]+)\*', r'\1', text)
     text = re.sub(r'__([^_]+)__', r'\1', text)
     text = re.sub(r'_([^_]+)_', r'\1', text)
     text = re.sub(r'`([^`]+)`', r'\1', text)
     
-    # Убираем префиксы типа "Краткое описание:", "Вот описание:", "Описание сериала:" и т.п.
+    # Убираем префиксы типа "Краткое описание:", "Вот описание:" и т.п.
     text = re.sub(r'^(?:краткое\s+)?описание[:\.]?\s*', '', text, flags=re.IGNORECASE)
     text = re.sub(r'^вот\s+(?:краткое\s+)?описание[:\.]?\s*', '', text, flags=re.IGNORECASE)
     text = re.sub(r'^описание\s+сериала[:\.]?\s*', '', text, flags=re.IGNORECASE)
@@ -86,52 +88,21 @@ def get_gigachat_description(playlist_title):
         print("[gigachat] credentials not found")
         return None
     
+    # Автоматически добавляем 'Basic ' если его нет
     if not credentials.startswith("Basic "):
         credentials = f"Basic {credentials}"
         print("[gigachat] added 'Basic ' prefix to credentials")
     
-    models_to_try = ["GigaChat-Max", "GigaChat-Pro", "GigaChat"]
-    
     try:
-        rq_uid = str(uuid.uuid4())
-        token_url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
-        token_headers = {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Accept": "application/json",
-            "RqUID": rq_uid,
-            "Authorization": credentials
-        }
-        token_data = {"scope": "GIGACHAT_API_PERS"}
-        
-        print(f"[gigachat] requesting token (RqUID: {rq_uid})...")
-        token_resp = requests.post(
-            token_url,
-            headers=token_headers,
-            data=token_data,
-            verify=False,
-            timeout=30
+        # Создаём клиент с использованием официального SDK
+        client = GigaChat(
+            base_url="https://api.giga.chat/v1",
+            credentials=credentials,
+            scope="GIGACHAT_API_PERS",
+            verify_ssl_certs=False,
         )
         
-        if token_resp.status_code != 200:
-            print(f"[gigachat] token request failed: {token_resp.status_code}")
-            print(f"[gigachat] response: {token_resp.text}")
-            return None
-        
-        token_json = token_resp.json()
-        access_token = token_json.get("access_token")
-        
-        if not access_token:
-            print("[gigachat] no access token in response")
-            return None
-        
-        chat_url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
-        chat_headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "Authorization": f"Bearer {access_token}"
-        }
-        
-        # УЛУЧШЕННЫЙ ПРОМПТ: человеческий стиль + разные начала
+        # Промпт с требованиями к стилю
         prompt = (
             f"Составь краткое описание (2-3 предложения) документального сериала "
             f"'{playlist_title}' производства National Geographic. "
@@ -154,49 +125,27 @@ def get_gigachat_description(playlist_title):
             f"- Пиши простым текстом, 2-3 предложения максимум"
         )
         
-        chat_payload = {
-            "model": None,
-            "messages": [
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": 0.8,
-            "max_tokens": 300
-        }
+        # Формируем запрос
+        chat = Chat(
+            model="GigaChat-3-Ultra",
+            messages=[Messages(role=MessagesRole.USER, content=prompt)],
+            temperature=0.8,
+            max_tokens=300,
+        )
         
-        for model in models_to_try:
-            chat_payload["model"] = model
-            print(f"[gigachat] trying model: {model}...")
-            
-            chat_resp = requests.post(
-                chat_url,
-                headers=chat_headers,
-                json=chat_payload,
-                verify=False,
-                timeout=30
-            )
-            
-            if chat_resp.status_code == 404 and "No such model" in chat_resp.text:
-                print(f"[gigachat] model {model} not found, trying next...")
-                continue
-            
-            if chat_resp.status_code != 200:
-                print(f"[gigachat] {model} failed: {chat_resp.status_code}")
-                print(f"[gigachat] response: {chat_resp.text}")
-                continue
-            
-            chat_json = chat_resp.json()
-            choices = chat_json.get("choices", [])
-            if choices:
-                raw_description = choices[0].get("message", {}).get("content", "").strip()
-                description = clean_description(raw_description)
-                print(f"[gigachat] {model} raw: {raw_description[:100]}...")
-                print(f"[gigachat] {model} cleaned: {description[:100]}...")
-                if description:
-                    return description
-            
-            print(f"[gigachat] {model} returned no usable content")
+        print(f"[gigachat] generating description with GigaChat-3-Ultra...")
+        resp = client.chat(chat)
         
-        print("[gigachat] all models failed")
+        # Извлекаем текст ответа
+        if resp.choices and len(resp.choices) > 0:
+            raw_description = resp.choices[0].message.content.strip()
+            description = clean_description(raw_description)
+            print(f"[gigachat] raw: {raw_description[:100]}...")
+            print(f"[gigachat] cleaned: {description[:100]}...")
+            if description:
+                return description
+        
+        print("[gigachat] no usable content in response")
         return None
         
     except Exception as e:
