@@ -95,13 +95,13 @@ def get_gigachat_description(playlist_title):
         }
         
         prompt = (
-            f"Найди в интернете информацию по сериалу '{playlist_title}' от National Geographic. "
+            f"Найди в интернете информацию по сериалу '{playlist_title}'"
             f"Составь краткое описание длиной 2-3 предложения. "
             f"Описание должно быть интересным, информативным и отражать суть сериала."
         )
         
         chat_payload = {
-            "model": "GigaChat",
+            "model": "GigaChat-3-Ultra",
             "messages": [
                 {"role": "user", "content": prompt}
             ],
