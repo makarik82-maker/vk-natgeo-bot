@@ -1,11 +1,9 @@
 import json
 import os
 import re
+import uuid
 import requests
 import urllib3
-
-from gigachat import GigaChat
-from gigachat.models import Chat, Messages, MessagesRole
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -94,13 +92,45 @@ def get_gigachat_description(playlist_title):
         print("[gigachat] added 'Basic ' prefix to credentials")
     
     try:
-        # Создаём клиент с использованием официального SDK
-        client = GigaChat(
-            base_url="https://api.giga.chat/v1",
-            credentials=credentials,
-            scope="GIGACHAT_API_PERS",
-            verify_ssl_certs=False,
+        # 1. Получаем access token
+        rq_uid = str(uuid.uuid4())
+        token_url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+        token_headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+            "RqUID": rq_uid,
+            "Authorization": credentials
+        }
+        token_data = {"scope": "GIGACHAT_API_PERS"}
+        
+        print(f"[gigachat] requesting token (RqUID: {rq_uid})...")
+        token_resp = requests.post(
+            token_url,
+            headers=token_headers,
+            data=token_data,
+            verify=False,
+            timeout=30
         )
+        
+        if token_resp.status_code != 200:
+            print(f"[gigachat] token request failed: {token_resp.status_code}")
+            print(f"[gigachat] response: {token_resp.text}")
+            return None
+        
+        token_json = token_resp.json()
+        access_token = token_json.get("access_token")
+        
+        if not access_token:
+            print("[gigachat] no access token in response")
+            return None
+        
+        # 2. Генерируем описание через НОВЫЙ endpoint api.giga.chat
+        chat_url = "https://api.giga.chat/v1/chat/completions"
+        chat_headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {access_token}"
+        }
         
         # Промпт с требованиями к стилю
         prompt = (
@@ -125,20 +155,33 @@ def get_gigachat_description(playlist_title):
             f"- Пиши простым текстом, 2-3 предложения максимум"
         )
         
-        # Формируем запрос
-        chat = Chat(
-            model="GigaChat-3-Ultra",
-            messages=[Messages(role=MessagesRole.USER, content=prompt)],
-            temperature=0.8,
-            max_tokens=300,
-        )
+        chat_payload = {
+            "model": "GigaChat-3-Ultra",
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.8,
+            "max_tokens": 300
+        }
         
         print(f"[gigachat] generating description with GigaChat-3-Ultra...")
-        resp = client.chat(chat)
+        chat_resp = requests.post(
+            chat_url,
+            headers=chat_headers,
+            json=chat_payload,
+            verify=False,
+            timeout=30
+        )
         
-        # Извлекаем текст ответа
-        if resp.choices and len(resp.choices) > 0:
-            raw_description = resp.choices[0].message.content.strip()
+        if chat_resp.status_code != 200:
+            print(f"[gigachat] chat request failed: {chat_resp.status_code}")
+            print(f"[gigachat] response: {chat_resp.text}")
+            return None
+        
+        chat_json = chat_resp.json()
+        choices = chat_json.get("choices", [])
+        if choices:
+            raw_description = choices[0].get("message", {}).get("content", "").strip()
             description = clean_description(raw_description)
             print(f"[gigachat] raw: {raw_description[:100]}...")
             print(f"[gigachat] cleaned: {description[:100]}...")
