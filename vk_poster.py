@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import uuid
 import requests
 import urllib3
@@ -41,22 +42,57 @@ def api_call(s, method, token, **params):
         raise RuntimeError(f"API {method}: {body['error']}")
     return body.get("response")
 
+def clean_description(text):
+    """Очищает ответ модели от мусора и форматирования"""
+    if not text:
+        return text
+    
+    # Убираем Markdown-форматирование: **жирный**, *курсив*, _подчёркнутый_, `код`
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+    text = re.sub(r'\*([^*]+)\*', r'\1', text)
+    text = re.sub(r'__([^_]+)__', r'\1', text)
+    text = re.sub(r'_([^_]+)_', r'\1', text)
+    text = re.sub(r'`([^`]+)`', r'\1', text)
+    
+    # Убираем префиксы типа "Краткое описание:", "Вот описание:", "Описание сериала:" и т.п.
+    text = re.sub(r'^(?:краткое\s+)?описание[:\.]?\s*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'^вот\s+(?:краткое\s+)?описание[:\.]?\s*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'^описание\s+сериала[:\.]?\s*', '', text, flags=re.IGNORECASE)
+    
+    # Убираем типовые преамбулы модели
+    trash_prefixes = [
+        r'^(?:конечно|разумеется|хорошо|безусловно|итак)[\s,!.]*',
+        r'^у меня нет (?:прямого )?доступа к интернету[^.]*\.\s*',
+        r'^я не могу (?:искать|найти)[^.]*интернет[^.]*\.\s*(?:но\s+)?',
+        r'^я могу составить[^.]*на основе[^.]*\.\s*',
+        r'^могу (?:предложить|составить)[^.]*\.\s*',
+    ]
+    for pattern in trash_prefixes:
+        text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+    
+    # Убираем лишние пробелы и переносы
+    text = re.sub(r'\n+', ' ', text)
+    text = re.sub(r'\s+', ' ', text)
+    text = text.strip()
+    
+    # Убираем ведущие "**", если остались
+    text = text.lstrip('*').lstrip()
+    
+    return text
+
 def get_gigachat_description(playlist_title):
     credentials = os.environ.get("GIGACHAT_CREDENTIALS")
     if not credentials:
         print("[gigachat] credentials not found")
         return None
     
-    # Автоматически добавляем 'Basic ' если его нет
     if not credentials.startswith("Basic "):
         credentials = f"Basic {credentials}"
         print("[gigachat] added 'Basic ' prefix to credentials")
     
-    # Список моделей в порядке приоритета (от лучшей к базовой)
     models_to_try = ["GigaChat-Max", "GigaChat-Pro", "GigaChat"]
     
     try:
-        # 1. Получаем access token с УНИКАЛЬНЫМ RqUID
         rq_uid = str(uuid.uuid4())
         token_url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
         token_headers = {
@@ -82,14 +118,12 @@ def get_gigachat_description(playlist_title):
             return None
         
         token_json = token_resp.json()
-        print(f"[gigachat] token response: {token_json}")
         access_token = token_json.get("access_token")
         
         if not access_token:
             print("[gigachat] no access token in response")
             return None
         
-        # 2. Пробуем модели по очереди
         chat_url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
         chat_headers = {
             "Content-Type": "application/json",
@@ -97,14 +131,18 @@ def get_gigachat_description(playlist_title):
             "Authorization": f"Bearer {access_token}"
         }
         
+        # НОВЫЙ ПРОМПТ: без требования искать в интернете, с явными инструкциями
         prompt = (
-            f"Найди в интернете информацию по сериалу '{playlist_title}' от National Geographic. "
-            f"Составь краткое описание длиной 2-3 предложения. "
-            f"Описание должно быть интересным, информативным и отражать суть сериала."
+            f"Составь краткое описание (2-3 предложения) документального сериала "
+            f"'{playlist_title}' производства National Geographic. "
+            f"Используй свои знания о сериале, его тематике и содержании. "
+            f"Описание должно быть интересным, информативным и отражать суть сериала. "
+            f"ВАЖНО: начинай сразу с описания, без преамбул, вводных фраз и оговорок. "
+            f"Не используй markdown-форматирование (звёздочки, подчёркивания), пиши простым текстом."
         )
         
         chat_payload = {
-            "model": None,  # Будет установлено ниже
+            "model": None,
             "messages": [
                 {"role": "user", "content": prompt}
             ],
@@ -134,15 +172,17 @@ def get_gigachat_description(playlist_title):
                 continue
             
             chat_json = chat_resp.json()
-            print(f"[gigachat] {model} SUCCESS")
-            
             choices = chat_json.get("choices", [])
             if choices:
-                description = choices[0].get("message", {}).get("content", "").strip()
-                print(f"[gigachat] generated with {model}: {description[:100]}...")
-                return description
+                raw_description = choices[0].get("message", {}).get("content", "").strip()
+                # ВАЖНО: очищаем ответ от мусора
+                description = clean_description(raw_description)
+                print(f"[gigachat] {model} raw: {raw_description[:100]}...")
+                print(f"[gigachat] {model} cleaned: {description[:100]}...")
+                if description:
+                    return description
             
-            print(f"[gigachat] {model} returned no choices")
+            print(f"[gigachat] {model} returned no usable content")
         
         print("[gigachat] all models failed")
         return None
@@ -201,7 +241,7 @@ def main():
     desc = get_gigachat_description(album_title)
     if not desc:
         desc = "Документальный сериал National Geographic."
-    desc = escape_html(desc)  # защита от спецсимволов в тексте от GigaChat
+    desc = escape_html(desc)
 
     playlist_url = f"https://vkvideo.ru/playlist/{OWNER_ID}_{album_id}"
     safe_title = escape_html(album_title)
