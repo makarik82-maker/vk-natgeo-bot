@@ -52,6 +52,9 @@ def get_gigachat_description(playlist_title):
         credentials = f"Basic {credentials}"
         print("[gigachat] added 'Basic ' prefix to credentials")
     
+    # Список моделей в порядке приоритета (от лучшей к базовой)
+    models_to_try = ["GigaChat-Max", "GigaChat-Pro", "GigaChat"]
+    
     try:
         # 1. Получаем access token с УНИКАЛЬНЫМ RqUID
         rq_uid = str(uuid.uuid4())
@@ -86,7 +89,7 @@ def get_gigachat_description(playlist_title):
             print("[gigachat] no access token in response")
             return None
         
-        # 2. Генерируем описание с НОВЫМ промптом
+        # 2. Пробуем модели по очереди
         chat_url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
         chat_headers = {
             "Content-Type": "application/json",
@@ -95,13 +98,13 @@ def get_gigachat_description(playlist_title):
         }
         
         prompt = (
-            f"Найди в интернете информацию по сериалу '{playlist_title}'"
+            f"Найди в интернете информацию по сериалу '{playlist_title}' от National Geographic. "
             f"Составь краткое описание длиной 2-3 предложения. "
             f"Описание должно быть интересным, информативным и отражать суть сериала."
         )
         
         chat_payload = {
-            "model": "GigaChat-3-Ultra",
+            "model": None,  # Будет установлено ниже
             "messages": [
                 {"role": "user", "content": prompt}
             ],
@@ -109,30 +112,39 @@ def get_gigachat_description(playlist_title):
             "max_tokens": 300
         }
         
-        print("[gigachat] generating description...")
-        chat_resp = requests.post(
-            chat_url,
-            headers=chat_headers,
-            json=chat_payload,
-            verify=False,
-            timeout=30
-        )
+        for model in models_to_try:
+            chat_payload["model"] = model
+            print(f"[gigachat] trying model: {model}...")
+            
+            chat_resp = requests.post(
+                chat_url,
+                headers=chat_headers,
+                json=chat_payload,
+                verify=False,
+                timeout=30
+            )
+            
+            if chat_resp.status_code == 404 and "No such model" in chat_resp.text:
+                print(f"[gigachat] model {model} not found, trying next...")
+                continue
+            
+            if chat_resp.status_code != 200:
+                print(f"[gigachat] {model} failed: {chat_resp.status_code}")
+                print(f"[gigachat] response: {chat_resp.text}")
+                continue
+            
+            chat_json = chat_resp.json()
+            print(f"[gigachat] {model} SUCCESS")
+            
+            choices = chat_json.get("choices", [])
+            if choices:
+                description = choices[0].get("message", {}).get("content", "").strip()
+                print(f"[gigachat] generated with {model}: {description[:100]}...")
+                return description
+            
+            print(f"[gigachat] {model} returned no choices")
         
-        if chat_resp.status_code != 200:
-            print(f"[gigachat] chat request failed: {chat_resp.status_code}")
-            print(f"[gigachat] response: {chat_resp.text}")
-            return None
-        
-        chat_json = chat_resp.json()
-        print(f"[gigachat] chat response: {chat_json}")
-        
-        choices = chat_json.get("choices", [])
-        if choices:
-            description = choices[0].get("message", {}).get("content", "").strip()
-            print(f"[gigachat] SUCCESS: {description[:100]}...")
-            return description
-        
-        print("[gigachat] no choices in response")
+        print("[gigachat] all models failed")
         return None
         
     except Exception as e:
