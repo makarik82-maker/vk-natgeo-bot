@@ -86,7 +86,7 @@ def get_gigachat_description(playlist_title):
             print("[gigachat] no access token in response")
             return None
         
-        # 2. Генерируем описание
+        # 2. Генерируем описание с НОВЫМ промптом
         chat_url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
         chat_headers = {
             "Content-Type": "application/json",
@@ -95,9 +95,9 @@ def get_gigachat_description(playlist_title):
         }
         
         prompt = (
-            f"Напиши краткое описание (2-3 предложения) для документального сериала "
-            f"'{playlist_title}' от National Geographic. "
-            f"Описание должно быть увлекательным и информативным."
+            f"Найди в интернете информацию по сериалу '{playlist_title}' от National Geographic. "
+            f"Составь краткое описание длиной 2-3 предложения. "
+            f"Описание должно быть интересным, информативным и отражать суть сериала."
         )
         
         chat_payload = {
@@ -106,7 +106,7 @@ def get_gigachat_description(playlist_title):
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.7,
-            "max_tokens": 200
+            "max_tokens": 300
         }
         
         print("[gigachat] generating description...")
@@ -189,6 +189,7 @@ def main():
     desc = get_gigachat_description(album_title)
     if not desc:
         desc = "Документальный сериал National Geographic."
+    desc = escape_html(desc)  # защита от спецсимволов в тексте от GigaChat
 
     playlist_url = f"https://vkvideo.ru/playlist/{OWNER_ID}_{album_id}"
     safe_title = escape_html(album_title)
